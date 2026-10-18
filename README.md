@@ -2,94 +2,61 @@
 
 Implementation of **RA-TTA: Reliability- and Ambiguity-Aware Adaptation for Vision-Language Tracking**.
 
-The tracker fuses visual, language, and a bounded quality-weighted memory. Visual confidence combines entropy, peak contrast, and memory similarity; language ambiguity compares positive and negative candidate similarity. Only reliable, unambiguous, non-occluded frames can update the local adapter through augmentation consistency and anchoring. Adapter state resets for each input sequence; ground-truth boxes are used only by the source-training objective and evaluator.
+## Installation
 
-## Install
-
-Use Python 3.10 or later. Create and activate a virtual environment, then install:
+Python >=3.10.
 
 ```bash
 python -m pip install -e .
 ```
 
-## Prepare data
+Inspection environment: Python 3.13.5, NumPy 2.1.3, PyTorch 2.7.1+cu118, SciPy 1.15.3 and scikit-learn 1.6.1. Checks cover Python syntax, JSON/TOML parsing and CLI options against parser definitions; training and evaluation were not run.
 
-`x[N,T,3,H,W]` contains videos, `initial_box[N,4]` the first-frame xyxy box normalized to [0,1], `language[N,D]` a fixed language embedding, and `y[N,T,4]` reference boxes. Export sequences from LaSOT/OTB language or another licensed tracking dataset; keep whole videos together. Language vectors are supplied by a frozen text encoder with the configured width.
+## Data and preprocessing
 
-Arrays use numeric NPZ format, loaded without pickle. `group[N]` identifies independent subjects, devices, scenes, lots, or source images. Related samples must share a group. Optional `split[N]` codes 0/1/2/3 explicitly assign training/validation/calibration/test (three-role input using 0/1/2 remains supported); otherwise ordered groups are allocated 60/15/10/15 to training/validation/calibration/test. Test data never select model parameters or checkpoints.
+Generate moving colored rectangles and distractors. Language inputs are a fixed 24-coordinate RGB one-hot color code for a closed three-word vocabulary.
 
 ```bash
-ra-tta demo --output data/example.npz --count 96 --config config.json
-ra-tta prepare --input data/example.npz --output data/prepared
+ra-tta demo --output data/generated.npz --count 96 --config config.json --seed 13
+ra-tta prepare --input data/generated.npz --output data/prepared
 ```
 
-The demo defines a small synthetic problem with the documented tensor interface. Use application data in that schema for the paper's evaluation settings.
+`x[N,T,3,H,W]`, normalized xyxy `initial_box[N,4]`, `language[N,24]`, and reference boxes `y[N,T,4]`; keep complete videos in one group.
 
-## Train and execute
+Numeric NPZ input uses `group` to keep related samples together. `prepare` writes train/validation/calibration/test archives from ordered groups (60/15/10/15), or honors explicit `split` codes 0/1/2/3.
+
+## Training and inference
 
 ```bash
-ra-tta train --input data/prepared --output runs/full --config config.json --variant full --epochs 100 --batch-size 16
+ra-tta train --input data/prepared --output runs/full --config config.json --variant full --epochs 100 --batch-size 16 --seed 13
+```
+
+Use `--device cuda` to select CUDA; CPU is the default. Keep the configuration, splits and seed fixed across comparisons.
+
+## Evaluation
+
+```bash
 ra-tta evaluate --input data/prepared/test.npz --model runs/full/model.pt --output runs/full/evaluation
-ra-tta plot --input runs --output runs/figures
 ```
 
-Training uses AdamW and selects the minimum validation objective. `model.pt` stores parameters and configuration; `history.json` records training/validation objectives. Evaluation exports predictions and mechanism tensors to `predictions.npz` and computed scores to `metrics.json`. Plotting exports comparison charts from those actual evaluation files.
+## Ablations
 
-`--device cpu` is the default; `--device cuda` selects CUDA. `--lr`, `--epochs`, `--batch-size`, and `--seed` control optimization. Method parameters are in `config.json`; `--set key=value` overrides one value using JSON syntax. Use identical splits and seeds across comparisons.
-
-## Calibration
-
-For interval or classification confidence calibration, use independent groups excluded from fitting and checkpoint selection:
+Variants: `full`, `baseline`, `no_gate`, `no_language`, `no_memory`. Reuse the prepared data and training seed:
 
 ```bash
-ra-tta calibrate --input data/prepared/calibration.npz --model runs/full/model.pt --output runs/full/calibrated.pt
-```
-
-Evaluate `calibrated.pt` with the same evaluation command. Classification uses temperature scaling; numeric intervals use a 90% group-maximum split-calibration expansion. Insufficient independent units retain infinite intervals. Pretraining checkpoints can initialize supervised training with `train --init path/to/model.pt`.
-
-## Baselines and ablations
-
-Available variants: `full`, `baseline`, `no_gate`, `no_language`, `no_memory`. `baseline` removes the paper-specific mechanism while retaining the input and prediction task. Other variants disable their named component.
-
-```bash
-ra-tta train --input data/prepared --output runs/baseline --config config.json --variant baseline
+ra-tta train --input data/prepared --output runs/baseline --config config.json --variant baseline --epochs 100 --batch-size 16 --seed 13
 ra-tta evaluate --input data/prepared/test.npz --model runs/baseline/model.pt --output runs/baseline/evaluation
 ```
 
-## Metrics and implementation conventions
+## Outputs
 
-Classification reports accuracy, balanced accuracy, macro-F1, NLL, confidence ECE, and worst-group F1; binary tasks add AUROC and AUPRC. Unknown labels use -1 and enable unknown AUROC and OSCR. Segmentation reports Dice, IoU, precision, recall, MAE, Brier/ECE, two-pixel boundary F1, symmetric contour distance, and HD95. Reconstruction reports RMSE, MAE, signed bias, unit-range PSNR, and Gaussian-window SSIM. Each method adds its mechanism metrics where applicable.
-
-Parameter counts and forward timing describe the executing process. Use batch size one and a declared device configuration for device latency comparisons. Physical energy and scores from external task evaluators require measured inputs; they are not inferred from parameter counts. All prediction arrays remain available for task-specific evaluation.
-
-The implementation uses the explicit core operations described above with configurable compact networks. Numeric conventions and application-specific information are stated with the method and data schema. The parameter file contains the current defaults.
-
-## Reproduction logic conventions
-
-The no_language control sets the language fusion weight to zero and removes its ambiguity requirement from the update gate. Its predicted boxes are independent of the supplied language embedding; visual reliability and occlusion still gate updates.
-
-## Selected compact tracking setting
-
-`config.json` fixes width 24, a four-frame 16-by-16 RGB training episode,
-adapt_lr=0.01 and eight memory entries. Use an explicit 24-dimensional frozen
-auxiliary language embedding as the input interface; fitting a VLM is unnecessary
-for this setting. The self-contained control generates moving red/green/blue
-target rectangles and a differently colored distractor; its fixed color-word code
-is the repeated RGB one-hot vector (24 coordinates). This is a declared closed
-three-word vocabulary, without pretending to use a general text model. Actual
-text-conditioned tracking can supply independently frozen vectors of this dimension. The adapter is reset per sequence, and no_language is
-the input-invariant control.
+- `data/prepared/*.npz`: grouped data splits.
+- `runs/full/model.pt`: validation-selected parameters and model configuration.
+- `runs/full/history.json` and `training.json`: objectives and run settings.
+- `runs/full/evaluation/predictions.npz` and `metrics.json`: predictions/mechanism arrays and computed metrics.
 
 ```bash
-ra-tta demo --output data/example.npz --config config.json --count 96
-ra-tta prepare --input data/example.npz --output data/prepared
-ra-tta train --input data/prepared --config config.json --output runs/compact --variant full --epochs 100 --seed 13
-ra-tta evaluate --input data/prepared/test.npz --model runs/compact/model.pt --output runs/compact/evaluation
+ra-tta plot --input runs --output runs/figures
 ```
 
-Real inputs use x[N,T,3,H,W], language[N,24], normalized initial_box[N,4], y[N,T,4]
-and independent video group IDs. No benchmark-specific loader is required.
-Pixel positions are cell centers (i+0.5)/size, consistent with edge-normalized
-ground-truth boxes. Predicted coordinate pairs are ordered before clipping, preserving valid xyxy
-boxes even when the learned coordinate offsets cross. Normalized precision is
-explicitly the fraction of center errors <=0.05 in unit image coordinates.
+`runs/figures/*.png` compares saved evaluation metrics. All data, checkpoint and output paths are CLI arguments.
