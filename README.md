@@ -67,3 +67,29 @@ The implementation uses the explicit core operations described above with config
 ## Reproduction logic conventions
 
 The no_language control sets the language fusion weight to zero and removes its ambiguity requirement from the update gate. Its predicted boxes are independent of the supplied language embedding; visual reliability and occlusion still gate updates.
+
+## Selected compact tracking setting
+
+`config.json` fixes width 24, a four-frame 16-by-16 RGB training episode,
+adapt_lr=0.01 and eight memory entries. Use an explicit 24-dimensional frozen
+auxiliary language embedding as the input interface; fitting a VLM is unnecessary
+for this setting. The self-contained control generates moving red/green/blue
+target rectangles and a differently colored distractor; its fixed color-word code
+is the repeated RGB one-hot vector (24 coordinates). This is a declared closed
+three-word vocabulary, without pretending to use a general text model. Actual
+text-conditioned tracking can supply independently frozen vectors of this dimension. The adapter is reset per sequence, and no_language is
+the input-invariant control.
+
+```bash
+ra-tta demo --output data/example.npz --config config.json --count 96
+ra-tta prepare --input data/example.npz --output data/prepared
+ra-tta train --input data/prepared --config config.json --output runs/compact --variant full --epochs 100 --seed 13
+ra-tta evaluate --input data/prepared/test.npz --model runs/compact/model.pt --output runs/compact/evaluation
+```
+
+Real inputs use x[N,T,3,H,W], language[N,24], normalized initial_box[N,4], y[N,T,4]
+and independent video group IDs. No benchmark-specific loader is required.
+Pixel positions are cell centers (i+0.5)/size, consistent with edge-normalized
+ground-truth boxes. Predicted coordinate pairs are ordered before clipping, preserving valid xyxy
+boxes even when the learned coordinate offsets cross. Normalized precision is
+explicitly the fraction of center errors <=0.05 in unit image coordinates.

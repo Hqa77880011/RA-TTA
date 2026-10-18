@@ -13,7 +13,7 @@ class Model(nn.Module):
         frames=b['x'].float();n,time,_,height,width=frames.shape;language=F.normalize(self.language(b['language'].float()),dim=-1)
         outputs=[];risks=[];updates=[]
         for row in range(n):
-            feature=self.encoder(frames[row,:1]);box=b['initial_box'][row];yy,xx=torch.meshgrid(torch.linspace(0,1,height,device=frames.device),torch.linspace(0,1,width,device=frames.device),indexing='ij')
+            feature=self.encoder(frames[row,:1]);box=b['initial_box'][row];yy,xx=torch.meshgrid((torch.arange(height,device=frames.device)+.5)/height,(torch.arange(width,device=frames.device)+.5)/width,indexing='ij')
             initial=((xx>=box[0])&(xx<=box[2])&(yy>=box[1])&(yy<=box[3])).float();template=(feature[0]*initial).sum((1,2))/initial.sum().clamp_min(1)
             memory=[template];quality=[torch.tensor(1.,device=frames.device)];adapter=self.adapter.clone();predictions=[];risk=[];changed=[]
             for t in range(time):
@@ -31,7 +31,9 @@ class Model(nn.Module):
                 reference=fusion[0]*visual+fusion[1]*language[row]+fusion[2]*prototype
                 score=(token@F.normalize(reference,dim=-1)*10).softmax(0);center=score@torch.stack([xx.flatten(),yy.flatten()],-1)
                 size=(box[2:]-box[:2]).clamp_min(.02);delta=self.box(score@token).tanh()*.05
-                prediction=torch.cat([center-size/2,center+size/2])+delta;predictions.append(prediction.clamp(0,1))
+                prediction=torch.cat([center-size/2,center+size/2])+delta
+                lower=torch.minimum(prediction[:2],prediction[2:]);upper=torch.maximum(prediction[:2],prediction[2:])
+                predictions.append(torch.cat([lower,upper]).clamp(0,1))
                 gate=(rv>.35)&(occlusion<.8)
                 if self.c['variant']!='no_language':gate=gate&(1-rl<.8)
                 if self.c['variant']=='no_gate':gate=torch.tensor(True,device=frames.device)
@@ -50,9 +52,26 @@ class Model(nn.Module):
 
 
 def demo(seed,n,c):
-    rng=np.random.default_rng(seed);box=np.tile([.2,.2,.7,.7],(n,1)).astype('float32')
-    return {'x':rng.random((n,4,3,16,16),dtype=np.float32),'y':np.tile(box[:,None],(1,4,1)),'initial_box':box,
-            'language':rng.normal(size=(n,c.get('width',24))).astype('float32'),'group':np.arange(n)}
+    """Generate moving colored targets with a fixed closed-vocabulary color code."""
+    rng=np.random.default_rng(seed);time,_,height,width=c.get('input_shape',[4,3,16,16])
+    if min(height,width)<4:
+        raise ValueError('Tracking control requires at least 4-by-4 images')
+    x=rng.uniform(0,.05,(n,time,3,height,width)).astype('float32')
+    y=np.empty((n,time,4),dtype='float32');language=np.zeros((n,c.get('width',24)),dtype='float32')
+    bh,bw=max(2,height//4),max(2,width//4)
+    for row in range(n):
+        color=int(rng.integers(3));language[row]=np.tile(np.eye(3,dtype='float32')[color],int(np.ceil(language.shape[1]/3)))[:language.shape[1]]
+        left=int(rng.integers(width-bw+1));top=int(rng.integers(height-bh+1))
+        dx,dy=rng.choice([-1,1],2);dleft=int(rng.integers(width-bw+1));dtop=int(rng.integers(height-bh+1))
+        for tick in range(time):
+            xx=int(np.clip(left+tick*dx,0,width-bw));yy=int(np.clip(top+tick*dy,0,height-bh))
+            otherx=int(np.clip(dleft-tick*dx,0,width-bw));othery=int(np.clip(dtop-tick*dy,0,height-bh))
+            x[row,tick,:,othery:othery+bh,otherx:otherx+bw]=.1
+            x[row,tick,(color+1)%3,othery:othery+bh,otherx:otherx+bw]=1.
+            x[row,tick,:,yy:yy+bh,xx:xx+bw]=.1
+            x[row,tick,color,yy:yy+bh,xx:xx+bw]=1.
+            y[row,tick]=[xx/width,yy/height,(xx+bw)/width,(yy+bh)/height]
+    return {'x':x,'y':y,'initial_box':y[:,0].copy(),'language':language,'group':np.arange(n)}
 
 
 def measure(p,d,c):
