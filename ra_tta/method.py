@@ -25,11 +25,15 @@ class Model(nn.Module):
                 rv=(1-entropy+peak+rm)/3;language_score=token@language[row];ordered=language_score.topk(min(2,len(token))).values
                 rl=torch.sigmoid((ordered[0]-ordered[-1])/.1);occlusion=1-(peak+rm)/2
                 if self.c['variant']=='no_language':rl=rl*0
-                fusion=torch.stack([rv,rl,rm]).softmax(0);reference=fusion[0]*visual+fusion[1]*language[row]+fusion[2]*prototype
+                fusion=torch.stack([rv,rl,rm]).softmax(0)
+                if self.c['variant']=='no_language':
+                    fusion=fusion*frames.new_tensor([1.,0.,1.]);fusion=fusion/fusion.sum()
+                reference=fusion[0]*visual+fusion[1]*language[row]+fusion[2]*prototype
                 score=(token@F.normalize(reference,dim=-1)*10).softmax(0);center=score@torch.stack([xx.flatten(),yy.flatten()],-1)
                 size=(box[2:]-box[:2]).clamp_min(.02);delta=self.box(score@token).tanh()*.05
                 prediction=torch.cat([center-size/2,center+size/2])+delta;predictions.append(prediction.clamp(0,1))
-                gate=(rv>.35)&(1-rl<.8)&(occlusion<.8)
+                gate=(rv>.35)&(occlusion<.8)
+                if self.c['variant']!='no_language':gate=gate&(1-rl<.8)
                 if self.c['variant']=='no_gate':gate=torch.tensor(True,device=frames.device)
                 if self.c['variant']=='baseline':gate=torch.tensor(False,device=frames.device)
                 if bool(gate) and not self.training:

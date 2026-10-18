@@ -63,3 +63,7 @@ Classification reports accuracy, balanced accuracy, macro-F1, NLL, confidence EC
 Parameter counts and forward timing describe the executing process. Use batch size one and a declared device configuration for device latency comparisons. Physical energy and scores from external task evaluators require measured inputs; they are not inferred from parameter counts. All prediction arrays remain available for task-specific evaluation.
 
 The implementation uses the explicit core operations described above with configurable compact networks. Numeric conventions and application-specific information are stated with the method and data schema. The parameter file contains the current defaults.
+
+## Reproduction logic conventions
+
+The no_language control sets the language fusion weight to zero and removes its ambiguity requirement from the update gate. Its predicted boxes are independent of the supplied language embedding; visual reliability and occlusion still gate updates.
